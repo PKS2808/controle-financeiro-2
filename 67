@@ -1,0 +1,341 @@
+import { useState, useEffect, useMemo } from "react";
+
+const CATEGORIES_INCOME = ["Salário","Freelance","Investimento","Presente","Outro"];
+const CATEGORIES_EXPENSE = ["Alimentação","Transporte","Moradia","Saúde","Educação","Lazer","Vestuário","Contas","Outro"];
+const COLORS_EXPENSE = ["#60A5FA","#34D399","#F87171","#F472B6","#A78BFA","#86EFAC","#FCD34D","#94A3B8","#FB923C"];
+const COLOR_IN = "#34D399";
+const COLOR_OUT = "#F87171";
+const COLOR_SAVED = "#60A5FA";
+
+const STORAGE_KEY = "fintrack_v3";
+
+function fmt(v) { return "R$ " + Number(v).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function pct(a, b) { return b === 0 ? 0 : Math.round((a / b) * 100); }
+
+async function persistLoad() {
+  try { const r = await window.storage.get(STORAGE_KEY); if (r && r.value) return JSON.parse(r.value); } catch {}
+  return null;
+}
+async function persistSave(d) { try { await window.storage.set(STORAGE_KEY, JSON.stringify(d)); } catch {} }
+
+const dark = {
+  bg: "#0a0a0a",
+  surface: "#141414",
+  card: "#1a1a1a",
+  border: "#2a2a2a",
+  borderStrong: "#3a3a3a",
+  textPrimary: "#f0f0f0",
+  textSecondary: "#888",
+  textMuted: "#555",
+};
+
+export default function App() {
+  const [data, setData] = useState({ transactions: [] });
+  const [loaded, setLoaded] = useState(false);
+  const [tab, setTab] = useState("dashboard");
+  const [period, setPeriod] = useState("month");
+  const [form, setForm] = useState({ type: "expense", desc: "", amount: "", category: CATEGORIES_EXPENSE[0], date: new Date().toISOString().slice(0,10) });
+  const [filterCat, setFilterCat] = useState("Todas");
+  const [filterType, setFilterType] = useState("Todas");
+  const [shareMsg, setShareMsg] = useState("");
+
+  useEffect(() => {
+    persistLoad().then(d => { if (d) setData(d); setLoaded(true); });
+  }, []);
+  useEffect(() => { if (loaded) persistSave(data); }, [data, loaded]);
+
+  const now = new Date();
+  const filtered = useMemo(() => data.transactions.filter(t => {
+    const d = new Date(t.date);
+    if (period === "week") { const ws = new Date(now); ws.setDate(now.getDate()-now.getDay()); ws.setHours(0,0,0,0); return d >= ws; }
+    if (period === "month") return d.getMonth()===now.getMonth() && d.getFullYear()===now.getFullYear();
+    if (period === "year") return d.getFullYear()===now.getFullYear();
+    return true;
+  }), [data.transactions, period]);
+
+  const totalIn = filtered.filter(t=>t.type==="income").reduce((s,t)=>s+t.amount,0);
+  const totalOut = filtered.filter(t=>t.type==="expense").reduce((s,t)=>s+t.amount,0);
+  const saved = totalIn - totalOut;
+
+  const catTotals = useMemo(() => {
+    const map = {};
+    filtered.filter(t=>t.type==="expense").forEach(t=>{ map[t.category]=(map[t.category]||0)+t.amount; });
+    return Object.entries(map).sort((a,b)=>b[1]-a[1]);
+  }, [filtered]);
+
+  function addTransaction() {
+    if (!form.desc || !form.amount || isNaN(parseFloat(form.amount))) return;
+    const t = { id: Date.now(), type: form.type, desc: form.desc, amount: parseFloat(form.amount), category: form.category, date: form.date };
+    setData(prev => ({ transactions: [t, ...prev.transactions] }));
+    setForm(f => ({ ...f, desc: "", amount: "" }));
+  }
+  function delTransaction(id) { setData(prev => ({ transactions: prev.transactions.filter(t=>t.id!==id) })); }
+  function share() {
+    navigator.clipboard?.writeText(window.location.href).then(()=>setShareMsg("Link copiado!")).catch(()=>setShareMsg("Copie a URL do navegador."));
+    setTimeout(()=>setShareMsg(""),3000);
+  }
+
+  const histList = useMemo(() => filtered.filter(t =>
+    (filterCat==="Todas"||t.category===filterCat) &&
+    (filterType==="Todas"||(filterType==="Entrada"?t.type==="income":t.type==="expense"))
+  ).sort((a,b)=>new Date(b.date)-new Date(a.date)), [filtered, filterCat, filterType]);
+
+  const allCats = ["Todas", ...new Set(filtered.map(t=>t.category))];
+  const periodLabel = {week:"Esta Semana",month:"Este Mês",year:"Este Ano",all:"Tudo"}[period];
+
+  const PieChart = ({ data: pd, size=110 }) => {
+    if (!pd.length) return <div style={{width:size,height:size,borderRadius:"50%",background:dark.surface,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,color:dark.textMuted}}>Sem dados</div>;
+    const total = pd.reduce((s,d)=>s+d.v,0);
+    let angle = -Math.PI/2;
+    const cx=size/2, cy=size/2, r=size/2-6;
+    const slices = pd.map((d,i)=>{
+      const a=(d.v/total)*2*Math.PI;
+      const x1=cx+r*Math.cos(angle), y1=cy+r*Math.sin(angle);
+      angle+=a;
+      const x2=cx+r*Math.cos(angle), y2=cy+r*Math.sin(angle);
+      const large=a>Math.PI?1:0;
+      return <path key={i} d={`M${cx},${cy} L${x1},${y1} A${r},${r} 0 ${large},1 ${x2},${y2} Z`} fill={d.color} opacity={0.9}/>;
+    });
+    return <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>{slices}<circle cx={cx} cy={cy} r={r*0.42} fill={dark.card}/></svg>;
+  };
+
+  const inputStyle = { background: dark.surface, border: `1px solid ${dark.border}`, borderRadius: 8, padding: "10px 12px", color: dark.textPrimary, fontSize: 14, width: "100%", boxSizing: "border-box", outline: "none" };
+  const selectStyle = { ...inputStyle, cursor: "pointer" };
+
+  return (
+    <div style={{ background: dark.bg, minHeight: "100vh", fontFamily: "var(--font-sans)", color: dark.textPrimary, padding: "24px 20px" }}>
+      <h2 className="sr-only">Controle Financeiro Pessoal</h2>
+
+      {/* Header */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: 32 }}>
+        <div>
+          <div style={{ fontSize: 22, fontWeight: 500, color: dark.textPrimary, marginBottom: 4 }}>Controle Financeiro</div>
+          <div style={{ fontSize: 13, color: dark.textMuted }}>{periodLabel}</div>
+        </div>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          {shareMsg && <span style={{ fontSize:12, color: COLOR_IN }}>{shareMsg}</span>}
+          <button onClick={share} style={{ background: dark.card, border: `1px solid ${dark.border}`, borderRadius: 8, color: dark.textSecondary, padding: "8px 14px", cursor:"pointer", fontSize:13, display:"flex", alignItems:"center", gap:6 }}>
+            Compartilhar
+          </button>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div style={{ display:"flex", gap: 4, marginBottom: 28, borderBottom: `1px solid ${dark.border}`, paddingBottom: 0 }}>
+        {[["dashboard","Dashboard"],["add","Lançamento"],["history","Histórico"]].map(([k,l])=>(
+          <button key={k} onClick={()=>setTab(k)} style={{ padding:"10px 18px", background:"none", border:"none", borderBottom: tab===k ? `2px solid ${COLOR_SAVED}` : "2px solid transparent", cursor:"pointer", fontSize: 14, fontWeight: tab===k ? 500 : 400, color: tab===k ? dark.textPrimary : dark.textSecondary, marginBottom:-1, transition:"all .15s" }}>
+            {l}
+          </button>
+        ))}
+      </div>
+
+      {/* Period selector */}
+      {tab !== "add" && (
+        <div style={{ display:"flex", gap: 8, marginBottom: 28 }}>
+          {[["week","Semana"],["month","Mês"],["year","Ano"],["all","Tudo"]].map(([k,l])=>(
+            <button key={k} onClick={()=>setPeriod(k)} style={{ padding:"6px 14px", background: period===k ? dark.card : "transparent", border: `1px solid ${period===k ? dark.borderStrong : dark.border}`, borderRadius: 20, cursor:"pointer", fontSize: 13, fontWeight: period===k ? 500 : 400, color: period===k ? dark.textPrimary : dark.textMuted }}>
+              {l}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* ===== DASHBOARD ===== */}
+      {tab === "dashboard" && (
+        <div style={{ display:"flex", flexDirection:"column", gap: 24 }}>
+
+          {/* 3 summary cards */}
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap: 16 }}>
+            {[
+              { label:"Receitas", value: totalIn, color: COLOR_IN, sub: "100% do total" },
+              { label:"Gastos", value: totalOut, color: COLOR_OUT, sub: `${pct(totalOut,totalIn)}% das receitas` },
+              { label:"Poupado", value: saved, color: saved>=0?COLOR_SAVED:COLOR_OUT, sub: `${pct(Math.max(saved,0),totalIn)}% das receitas` },
+            ].map(c=>(
+              <div key={c.label} style={{ background: dark.card, border: `1px solid ${dark.border}`, borderRadius: 12, padding: "20px 18px" }}>
+                <div style={{ fontSize: 12, color: dark.textMuted, marginBottom: 10, textTransform:"uppercase", letterSpacing:"0.06em" }}>{c.label}</div>
+                <div style={{ fontSize: 22, fontWeight: 500, color: c.color, marginBottom: 6 }}>{fmt(c.value)}</div>
+                <div style={{ fontSize: 11, color: dark.textMuted }}>{c.sub}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Percentage bars */}
+          <div style={{ background: dark.card, border: `1px solid ${dark.border}`, borderRadius: 12, padding: "22px 20px" }}>
+            <div style={{ fontSize: 13, fontWeight: 500, color: dark.textSecondary, marginBottom: 18 }}>Distribuição percentual</div>
+            {totalIn > 0 ? (
+              <div style={{ display:"flex", flexDirection:"column", gap: 16 }}>
+                {[["Gasto",pct(totalOut,totalIn),COLOR_OUT],["Poupado",pct(Math.max(saved,0),totalIn),COLOR_SAVED]].map(([l,p,c])=>(
+                  <div key={l}>
+                    <div style={{ display:"flex", justifyContent:"space-between", fontSize:13, marginBottom:8 }}>
+                      <span style={{ color: dark.textSecondary }}>{l}</span>
+                      <span style={{ fontWeight:500, color:c, fontSize:15 }}>{p}%</span>
+                    </div>
+                    <div style={{ height:10, background: dark.surface, borderRadius:6, overflow:"hidden" }}>
+                      <div style={{ height:"100%", width:`${Math.min(p,100)}%`, background:c, borderRadius:6 }}/>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : <div style={{ fontSize:13, color:dark.textMuted, textAlign:"center", padding:"1rem 0" }}>Sem receitas no período</div>}
+          </div>
+
+          {/* Pie + legend */}
+          <div style={{ background: dark.card, border: `1px solid ${dark.border}`, borderRadius: 12, padding: "22px 20px" }}>
+            <div style={{ fontSize: 13, fontWeight: 500, color: dark.textSecondary, marginBottom: 20 }}>Gastos por categoria</div>
+            {catTotals.length ? (
+              <div style={{ display:"flex", gap: 28, alignItems:"center" }}>
+                <PieChart data={catTotals.map((c,i)=>({v:c[1],color:COLORS_EXPENSE[i%COLORS_EXPENSE.length]}))} size={120} />
+                <div style={{ flex:1, display:"flex", flexDirection:"column", gap:10 }}>
+                  {catTotals.slice(0,6).map((c,i)=>(
+                    <div key={i} style={{ display:"flex", alignItems:"center", gap:10 }}>
+                      <span style={{ width:10, height:10, borderRadius:3, background:COLORS_EXPENSE[i%COLORS_EXPENSE.length], flexShrink:0 }}/>
+                      <span style={{ flex:1, fontSize:13, color:dark.textSecondary, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{c[0]}</span>
+                      <span style={{ fontSize:13, color:dark.textPrimary, fontWeight:500 }}>{pct(c[1],totalOut)}%</span>
+                      <span style={{ fontSize:12, color:dark.textMuted, minWidth:80, textAlign:"right" }}>{fmt(c[1])}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : <div style={{ fontSize:13, color:dark.textMuted, textAlign:"center", padding:"1rem 0" }}>Sem gastos no período</div>}
+          </div>
+
+          {/* Recent transactions */}
+          <div style={{ background: dark.card, border: `1px solid ${dark.border}`, borderRadius: 12, padding: "22px 20px" }}>
+            <div style={{ fontSize: 13, fontWeight: 500, color: dark.textSecondary, marginBottom: 18 }}>Últimas transações</div>
+            {filtered.length === 0 && <div style={{ fontSize:13, color:dark.textMuted, textAlign:"center", padding:"1.5rem 0" }}>Nenhuma transação. Vá em Lançamento para adicionar!</div>}
+            <div style={{ display:"flex", flexDirection:"column", gap:0 }}>
+              {filtered.slice(0,6).map((t,i)=>(
+                <div key={t.id} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"14px 0", borderBottom: i<Math.min(filtered.length,6)-1 ? `1px solid ${dark.border}` : "none" }}>
+                  <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
+                    <span style={{ fontSize:14, fontWeight:500, color:dark.textPrimary }}>{t.desc}</span>
+                    <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                      <span style={{ fontSize:11, background: dark.surface, border:`1px solid ${dark.border}`, borderRadius:6, padding:"2px 8px", color:dark.textMuted }}>{t.category}</span>
+                      <span style={{ fontSize:11, color:dark.textMuted }}>{new Date(t.date+"T12:00:00").toLocaleDateString("pt-BR")}</span>
+                    </div>
+                  </div>
+                  <span style={{ fontSize:16, fontWeight:500, color:t.type==="income"?COLOR_IN:COLOR_OUT }}>
+                    {t.type==="income"?"+":"-"}{fmt(t.amount)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== LANÇAMENTO ===== */}
+      {tab === "add" && (
+        <div style={{ maxWidth: 520 }}>
+          {/* Type toggle */}
+          <div style={{ display:"flex", gap:10, marginBottom: 20 }}>
+            {[["expense","💸 Gasto",COLOR_OUT],["income","💰 Receita",COLOR_IN]].map(([type,label,color])=>(
+              <button key={type} onClick={()=>setForm(f=>({...f,type,category:(type==="expense"?CATEGORIES_EXPENSE:CATEGORIES_INCOME)[0]}))}
+                style={{ flex:1, padding:"14px 0", border:`2px solid ${form.type===type?color:dark.border}`, borderRadius:12, cursor:"pointer", background:form.type===type?color+"25":"transparent", color:form.type===type?color:dark.textMuted, fontSize:15, fontWeight:form.type===type?500:400, transition:"all .15s" }}>
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <div style={{ background: dark.card, border:`1px solid ${dark.border}`, borderRadius:14, padding:"24px 22px", display:"flex", flexDirection:"column", gap:20 }}>
+
+            <div>
+              <label style={{ fontSize:12, color:dark.textMuted, display:"block", marginBottom:8, textTransform:"uppercase", letterSpacing:"0.06em" }}>Descrição *</label>
+              <input
+                style={{ ...inputStyle, fontSize:16, padding:"13px 14px" }}
+                placeholder={form.type==="income" ? "Ex: Salário de junho, Freelance..." : "Ex: Mercado, Conta de luz..."}
+                value={form.desc}
+                onChange={e=>setForm(f=>({...f,desc:e.target.value}))}
+                onKeyDown={e=>{ if(e.key==="Enter") addTransaction(); }}
+              />
+            </div>
+
+            <div>
+              <label style={{ fontSize:12, color:dark.textMuted, display:"block", marginBottom:8, textTransform:"uppercase", letterSpacing:"0.06em" }}>Valor (R$) *</label>
+              <input
+                style={{ ...inputStyle, fontSize:22, fontWeight:500, padding:"13px 14px", color: form.type==="income"?COLOR_IN:COLOR_OUT }}
+                type="number" min="0" step="0.01" placeholder="0,00"
+                value={form.amount}
+                onChange={e=>setForm(f=>({...f,amount:e.target.value}))}
+                onKeyDown={e=>{ if(e.key==="Enter") addTransaction(); }}
+              />
+            </div>
+
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 }}>
+              <div>
+                <label style={{ fontSize:12, color:dark.textMuted, display:"block", marginBottom:8, textTransform:"uppercase", letterSpacing:"0.06em" }}>Categoria</label>
+                <select style={{ ...selectStyle, fontSize:14, padding:"13px 14px" }} value={form.category} onChange={e=>setForm(f=>({...f,category:e.target.value}))}>
+                  {(form.type==="expense"?CATEGORIES_EXPENSE:CATEGORIES_INCOME).map(c=><option key={c}>{c}</option>)}
+                </select>
+              </div>
+              <div>
+                <label style={{ fontSize:12, color:dark.textMuted, display:"block", marginBottom:8, textTransform:"uppercase", letterSpacing:"0.06em" }}>Data</label>
+                <input style={{ ...inputStyle, fontSize:14, padding:"13px 14px" }} type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))} />
+              </div>
+            </div>
+
+            <button
+              onClick={addTransaction}
+              style={{ padding:"16px 0", background:form.type==="income"?COLOR_IN:COLOR_OUT, color:"#000", border:"none", borderRadius:12, cursor:"pointer", fontWeight:500, fontSize:16, marginTop:4, letterSpacing:"0.02em" }}>
+              + Adicionar {form.type==="income"?"Receita":"Gasto"}
+            </button>
+
+            {(!form.desc || !form.amount) && (
+              <div style={{ fontSize:12, color:dark.textMuted, textAlign:"center", marginTop:-8 }}>
+                Preencha a descrição e o valor para continuar
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ===== HISTÓRICO ===== */}
+      {tab === "history" && (
+        <div style={{ display:"flex", flexDirection:"column", gap:20 }}>
+          {/* Filters */}
+          <div style={{ background: dark.card, border:`1px solid ${dark.border}`, borderRadius:12, padding:"18px 20px" }}>
+            <div style={{ fontSize:13, fontWeight:500, color:dark.textSecondary, marginBottom:14 }}>Filtros</div>
+            <div style={{ display:"flex", gap:12 }}>
+              <div style={{ flex:1 }}>
+                <label style={{ fontSize:11, color:dark.textMuted, display:"block", marginBottom:6, textTransform:"uppercase", letterSpacing:"0.05em" }}>Tipo</label>
+                <select style={selectStyle} value={filterType} onChange={e=>setFilterType(e.target.value)}>
+                  {["Todas","Entrada","Saída"].map(t=><option key={t}>{t}</option>)}
+                </select>
+              </div>
+              <div style={{ flex:1 }}>
+                <label style={{ fontSize:11, color:dark.textMuted, display:"block", marginBottom:6, textTransform:"uppercase", letterSpacing:"0.05em" }}>Categoria</label>
+                <select style={selectStyle} value={filterCat} onChange={e=>setFilterCat(e.target.value)}>
+                  {allCats.map(c=><option key={c}>{c}</option>)}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {/* Transaction list */}
+          <div style={{ background: dark.card, border:`1px solid ${dark.border}`, borderRadius:12, padding:"22px 20px" }}>
+            <div style={{ fontSize:13, color:dark.textMuted, marginBottom:18 }}>{histList.length} transação{histList.length!==1?"ões":""} encontrada{histList.length!==1?"s":""}</div>
+            {histList.length===0 && <div style={{ fontSize:13, color:dark.textMuted, textAlign:"center", padding:"2rem 0" }}>Nenhuma transação encontrada.</div>}
+            <div style={{ display:"flex", flexDirection:"column" }}>
+              {histList.map((t,i)=>(
+                <div key={t.id} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"16px 0", borderBottom: i<histList.length-1?`1px solid ${dark.border}`:"none" }}>
+                  <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                    <span style={{ fontSize:14, fontWeight:500, color:dark.textPrimary }}>{t.desc}</span>
+                    <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                      <span style={{ fontSize:11, background:dark.surface, border:`1px solid ${dark.border}`, borderRadius:6, padding:"2px 8px", color:dark.textMuted }}>{t.category}</span>
+                      <span style={{ fontSize:11, color:dark.textMuted }}>{new Date(t.date+"T12:00:00").toLocaleDateString("pt-BR")}</span>
+                    </div>
+                  </div>
+                  <div style={{ display:"flex", alignItems:"center", gap:16 }}>
+                    <span style={{ fontSize:16, fontWeight:500, color:t.type==="income"?COLOR_IN:COLOR_OUT }}>
+                      {t.type==="income"?"+":"-"}{fmt(t.amount)}
+                    </span>
+                    <button onClick={()=>delTransaction(t.id)} style={{ background:"none", border:`1px solid ${dark.border}`, borderRadius:6, cursor:"pointer", color:dark.textMuted, width:28, height:28, display:"flex", alignItems:"center", justifyContent:"center", fontSize:16 }}>×</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
